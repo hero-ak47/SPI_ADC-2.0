@@ -1,0 +1,178 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+use work.common_package.all; 
+
+entity adc is
+  generic(
+        size : integer := 5;
+        sample_size : integer := 20 -- Number of bits in 1 sample of ADC -- Maybe 20
+    );
+
+Port(
+     reset  : in std_logic;
+     clk: in std_logic;
+     start_tx: in std_logic;
+     rx_done : out STD_LOGIC;
+     busy: out std_logic;
+     adc_cs_n : out STD_LOGIC;
+     adc_sck : out STD_LOGIC;
+     adc_sdi : out STD_LOGIC;
+     adc_sdo : in STD_LOGIC;
+     d_out2  : out unsigned(11 downto 0)
+
+ );
+end adc;
+
+
+architecture Behavioral of adc is
+type state_type is (IDLE,  LOAD, TRANSMIT, FINISH);
+constant d_in: std_logic_vector( sample_size -1 downto 0) := "01100000000000000000";
+
+constant TOTAL_BITS: integer:= sample_size;
+constant SCK_DIV: integer:= 4;
+constant ADDR_MAX: integer:= 99;
+signal cs_sig: std_logic;
+signal state_reg, state_next : state_type;
+signal bit_count_reg, bit_count_next : unsigned(4 downto 0);
+signal sck_count_reg, sck_count_next : unsigned(4 downto 0);
+signal shift_reg, shift_reg_next : std_logic_vector( sample_size -1  downto 0);
+signal rx_done_reg, rx_done_next : std_logic;
+signal busy_reg, busy_next : std_logic;
+signal adc_cs_n_reg, adc_cs_n_next: std_logic;
+signal adc_sck_reg, adc_sck_next: std_logic;
+signal adc_sdi_reg, adc_sdi_next: std_logic;
+signal adc_sdo_reg, adc_sdo_next : std_logic;
+constant SAMPLE_WIDTH : integer :=  sample_size;
+signal shift_reg_1,shift_reg_next_1 : unsigned(SAMPLE_WIDTH-1 downto 0) ;
+signal adc_sck_sig, cs: std_logic;
+signal sample_memory_reg, sample_memory_next :  sample_array_type ;
+signal addr_reg, addr_next : unsigned(12 downto 0) := (others => '0');
+signal data_temp_reg, data_temp_next: unsigned(11 downto 0);
+signal data: std_logic_vector(11 downto 0);
+signal wr_en :  STD_LOGIC;
+signal   rd_en :  STD_LOGIC;
+   signal dout :  STD_LOGIC_VECTOR(11 DOWNTO 0);
+   signal full :  STD_LOGIC;
+   signal empty :  STD_LOGIC;
+
+begin
+
+process(clk, reset)
+begin
+    if (reset = '1') then
+        state_reg <= IDLE;
+        bit_count_reg <= (others => '0');
+        sck_count_reg <= (others => '0');
+        shift_reg <= (others => '0');
+         shift_reg_1 <= (others => '0');
+        rx_done_reg <= '0';
+        busy_reg  <= '0';
+        adc_cs_n_reg <= '1';
+        adc_sck_reg  <= '0';
+        adc_sdi_reg   <= '0';
+        adc_sdo_reg    <= '0';
+        addr_reg <= (others => '0');
+          data_temp_reg <= (others => '0');
+       sample_memory_reg <= (others => (others => '0'));
+    elsif falling_edge(clk) then
+        state_reg <= state_next;
+        bit_count_reg <= bit_count_next;
+        sck_count_reg <= sck_count_next;
+        shift_reg <= shift_reg_next;
+        shift_reg_1 <= shift_reg_next_1;
+        rx_done_reg <= rx_done_next;
+        busy_reg <= busy_next;
+        adc_cs_n_reg <= adc_cs_n_next;
+        adc_sck_reg <= adc_sck_next;
+        adc_sdi_reg <= adc_sdi_next;
+        adc_sdo_reg  <= adc_sdo_next;
+        addr_reg <= addr_next;
+        
+        data_temp_reg <= data_temp_next ;
+       sample_memory_reg <= sample_memory_next;
+      --  d_out2 <= dout;
+    end if;
+end process;
+
+process(state_reg, bit_count_reg, sck_count_reg, shift_reg, shift_reg_1, adc_sdo, sample_memory_reg, data_temp_reg, shift_reg_1, adc_cs_n_reg , adc_sck_reg, adc_sdi_reg,
+        busy_reg, rx_done_reg, start_tx, addr_reg)
+begin 
+    state_next <= state_reg;
+    bit_count_next <= bit_count_reg;
+    sck_count_next <= sck_count_reg;
+    shift_reg_next <= shift_reg;
+    shift_reg_next_1 <= shift_reg_1;
+    adc_cs_n_next <= adc_cs_n_reg;
+    adc_sck_next <= adc_sck_reg;
+    adc_sdi_next <= adc_sdi_reg;
+    busy_next <= busy_reg;
+    rx_done_next <= '0';
+    data_temp_next <= data_temp_reg;
+    addr_next <= addr_reg;
+    sample_memory_next <= sample_memory_reg;
+    case state_reg is
+        when IDLE =>
+            adc_cs_n_next <= '1';
+            adc_sck_next <= '0';
+            busy_next <= '0';
+            sck_count_next <= (others => '0');
+            if start_tx = '1' then
+                state_next <= LOAD;
+                busy_next <= '1';
+            end if;
+        
+        when LOAD => 
+            
+            data_temp_next <= sample_memory_reg(TO_INTEGER(addr_reg));
+ 
+            shift_reg_next <= d_in;
+            if addr_reg = ADDR_MAX then
+                addr_next <= (others => '0');
+            else
+                addr_next <= addr_reg + 1;
+            end if;
+            bit_count_next <= to_unsigned(TOTAL_BITS-1, bit_count_next'length);
+      
+            state_next <= TRANSMIT;
+        when TRANSMIT => 
+            sck_count_next <= sck_count_reg + 1;
+            case sck_count_reg is
+                when "00000" =>
+                    adc_sck_next <= '0';
+                    adc_sdi_next <= shift_reg(SAMPLE_WIDTH-1);
+                when "01101" => 
+                    adc_sck_next <= '1';
+                when "11010" =>
+                    adc_sck_next <= '0';
+                 
+                   adc_cs_n_next <= '0';
+                    shift_reg_next <= shift_reg(SAMPLE_WIDTH-2 downto 0) & '0';
+                    shift_reg_next_1 <= shift_reg_1(SAMPLE_WIDTH-2 downto 0) & adc_sdo;
+                    if bit_count_reg = 0 then
+                        sample_memory_next(TO_INTEGER(addr_reg)) <= shift_reg_1(11 downto 0);
+                     
+                        state_next <= FINISH;
+                    else 
+                        bit_count_next <= bit_count_reg - 1;
+                    end if;
+                    sck_count_next <= (others => '0');
+                when others => 
+                    null;
+            end case;
+        when FINISH => 
+            adc_cs_n_next <= '1';
+            adc_sck_next <= '0';
+            rx_done_next <= '1';
+            
+            state_next <= IDLE;
+    end case;
+end process;
+d_out2 <= data_temp_reg; 
+adc_cs_n <= adc_cs_n_reg;
+adc_sck <= adc_sck_reg;  
+adc_sdi <= adc_sdi_reg;
+busy <= busy_reg;
+rx_done <= rx_done_reg;   
+
+end Behavioral;
